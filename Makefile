@@ -3,21 +3,22 @@
 KERNEL_BUILD ?= /lib/modules/$(shell uname -r)/build
 MODULE_NAME := ec_su_axb35.ko
 MODULE_INSTALLED_PATH := $(shell modinfo -n $(basename $(MODULE_NAME)) 2>/dev/null)
+PWD := $(CURDIR)
 
 .PHONY: default
 default: modules
 
 .PHONY: modules
 modules:
-	$(MAKE) -C $(KERNEL_BUILD) M=$(shell pwd) modules
+	$(MAKE) -C $(KERNEL_BUILD) M=$(PWD) modules
 
 .PHONY: modules_install
 modules_install: modules
-	$(MAKE) -C $(KERNEL_BUILD) M=$(shell pwd) modules_install
+	$(MAKE) -C $(KERNEL_BUILD) M=$(PWD) modules_install
 
 .PHONY: clean
 clean:
-	$(MAKE) -C $(KERNEL_BUILD) M=$(shell pwd) clean
+	$(MAKE) -C $(KERNEL_BUILD) M=$(PWD) clean
 	rm -rf $(BUILD_DIR)
 
 .PHONY: install
