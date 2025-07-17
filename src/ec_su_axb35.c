@@ -146,66 +146,6 @@ static ssize_t fan_mode_show(struct device *dev, struct device_attribute *attr,
     return sprintf(buf, "%s\n", mode);
 }
 
-static ssize_t fan_mode_store(struct device *dev, struct device_attribute *attr,
-                              const char *buf, size_t count)
-{
-    struct ec_fan *fan = dev_get_drvdata(dev);
-    u8             val;
-
-    if (sysfs_streq(buf, "auto")) {
-        fan->mode = AUTO;
-    } else if (sysfs_streq(buf, "fixed")) {
-        fan->mode = FIXED;
-    } else if (sysfs_streq(buf, "curve")) {
-        fan->mode = CURVE;
-    } else {
-        return -EINVAL;
-    }
-
-    switch (fan->mode) {
-    case AUTO:
-        fan->mode = AUTO;
-        switch (fan->mode_reg) {
-        case 0x21:
-            val = 0x10;
-            break;
-        case 0x23:
-            val = 0x20;
-            break;
-        case 0x25:
-            val = 0x30;
-            break;
-        default:
-            return -EINVAL;
-        }
-        break;
-    case FIXED:
-    case CURVE:
-        switch (fan->mode_reg) {
-        case 0x21:
-            val = 0x11;
-            break;
-        case 0x23:
-            val = 0x21;
-            break;
-        case 0x25:
-            val = 0x31;
-            break;
-        default:
-            return -EINVAL;
-        }
-        break;
-    }
-
-    // TODO: handle error
-    ec_write(fan->mode_reg, val);
-
-    return count;
-}
-
-static struct device_attribute dev_attr_fan_mode =
-    __ATTR(mode, 0644, fan_mode_show, fan_mode_store);
-
 static u8 read_fan_level(struct ec_fan *fan)
 {
     u8 val;
@@ -294,6 +234,88 @@ static ssize_t fan_level_store(struct device           *dev,
 
 static struct device_attribute dev_attr_fan_level =
     __ATTR(level, 0644, fan_level_show, fan_level_store);
+
+static ssize_t fan_mode_store(struct device *dev, struct device_attribute *attr,
+                              const char *buf, size_t count)
+{
+    struct ec_fan *fan = dev_get_drvdata(dev);
+    u8             val;
+
+    if (sysfs_streq(buf, "auto")) {
+        fan->mode = AUTO;
+    } else if (sysfs_streq(buf, "fixed")) {
+        fan->mode = FIXED;
+    } else if (sysfs_streq(buf, "curve")) {
+        fan->mode = CURVE;
+    } else {
+        return -EINVAL;
+    }
+
+    switch (fan->mode) {
+    case AUTO:
+        fan->mode = AUTO;
+        switch (fan->mode_reg) {
+        case 0x21:
+            val = 0x10;
+            break;
+        case 0x23:
+            val = 0x20;
+            break;
+        case 0x25:
+            val = 0x30;
+            break;
+        default:
+            return -EINVAL;
+        }
+        break;
+    case FIXED:
+    case CURVE:
+        switch (fan->mode_reg) {
+        case 0x21:
+            val = 0x11;
+            break;
+        case 0x23:
+            val = 0x21;
+            break;
+        case 0x25:
+            val = 0x31;
+            break;
+        default:
+            return -EINVAL;
+        }
+        break;
+    }
+
+    // TODO: handle error
+    ec_write(fan->mode_reg, val);
+
+    // When switching to CURVE mode, set initial fan level based on current temperature
+    // to prevent RPM burst from inappropriate starting level
+    if (fan->mode == CURVE) {
+        u8 temp;
+        // TODO: handle error
+        if (ec_read(ec_temp.reg, &temp) == 0) {
+            u8 initial_level = 0;
+            int i;
+            
+            // Find the appropriate level based on current temperature
+            // Use rampup curve for initial positioning to be more responsive
+            for (i = 5; i > 0; i--) {
+                if (temp >= fan->rampup_curve[i]) {
+                    initial_level = i;
+                    break;
+                }
+            }
+            
+            write_fan_level(fan, initial_level);
+        }
+    }
+
+    return count;
+}
+
+static struct device_attribute dev_attr_fan_mode =
+    __ATTR(mode, 0644, fan_mode_show, fan_mode_store);
 
 static ssize_t fan_curve_show(u8 *curve, char *buf)
 {
@@ -602,7 +624,7 @@ static void __exit ec_su_axb35_exit(void)
 
     class_destroy(ec_class);
     unregister_chrdev_region(ec_su_axb35_dev, ARRAY_SIZE(ec_fans) + 2);
-    pr_info("ec_su_axb35: Modul unloaded\n");
+    pr_info("ec_su_axb35: Module unloaded\n");
 }
 
 module_init(ec_su_axb35_init);
