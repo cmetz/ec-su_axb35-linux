@@ -11,13 +11,8 @@ axb35_name=ec_su_axb35
 axb35_path=/sys/class/$axb35_name
 axb35_delay=1
 raw_mode=0
+dev_mode=0
 declare -a axb35_vars
-
-# check if module is loaded and path exists
-if ! lsmod | grep -q "$axb35_name" || [ ! -d "$axb35_path" ]; then
-    echo "Error: Module '$axb35_name' is not loaded or not accessible"
-    exit 2
-fi
 
 # usage info
 usage() {
@@ -76,18 +71,119 @@ process_current_state() {
     local levels=($fan1level $fan2level $fan3level)
 
     # for fans in auto or fixed mode, ramp-up and ramp-down curves are not applicable
-    # for fans fixed mode, fan level is not applicable
+    # for fans in auto mode, fan level is not applicable
     for i in {0..2}; do
         if [[ "${axb35_vars[${modes[$i]}]}" == "auto" || "${axb35_vars[${modes[$i]}]}" == "fixed" ]]; then
-            axb35_vars[${rus[$i]}]='N/A'
-            axb35_vars[${rds[$i]}]='N/A'
+            axb35_vars[${rus[$i]}]=''
+            axb35_vars[${rds[$i]}]=''
         fi
-        [[ "${axb35_vars[${modes[$i]}]}" == "auto" ]] && axb35_vars[${levels[$i]}]='N/A'
+        [[ "${axb35_vars[${modes[$i]}]}" == "auto" ]] && axb35_vars[${levels[$i]}]=''
     done
+
+    # check if any conditional field changed to/from empty compared to previous state
+    needs_redraw=0
+    local conditional_indices=($fan1level $fan1ru $fan1rd $fan2level $fan2ru $fan2rd $fan3level $fan3ru $fan3rd)
+    for idx in "${conditional_indices[@]}"; do
+        local cur_empty=0 prev_empty=0
+        [[ -z "${axb35_vars[$idx]}" ]] && cur_empty=1
+        [[ -z "${axb35_vars_old[$idx]}" ]] && prev_empty=1
+        if [[ $cur_empty -ne $prev_empty ]]; then
+            needs_redraw=1
+            break
+        fi
+    done
+    axb35_vars_old=("${axb35_vars[@]}")
+}
+
+# check if module is loaded and path exists (skipped in dev mode)
+check_module() {
+    if ! lsmod | grep -q "$axb35_name" || [ ! -d "$axb35_path" ]; then
+        echo "Error: Module '$axb35_name' is not loaded or not accessible"
+        exit 2
+    fi
+}
+
+# dev mode state generator - cycles through various states to exercise the UI
+_dev_tick=0
+get_dev_state() {
+    local tick=$(( _dev_tick % 40 ))
+    (( _dev_tick++ ))
+
+    # cycle through phases:
+    #   0-9:   all fans auto, low temp, quiet power
+    #  10-19:  fan1 fixed, fan2 curve, fan3 auto, mid temp, balanced power
+    #  20-29:  all fans curve, high temp, performance power
+    #  30-39:  fan1 curve, fan2 auto, fan3 fixed, cooling down, balanced power
+
+    local f1rpm f2rpm f3rpm
+    local f1mode f2mode f3mode
+    local f1level f2level f3level
+    local f1ru f2ru f3ru
+    local f1rd f2rd f3rd
+    local cur_temp pwr_mode
+
+    if (( tick < 10 )); then
+        # phase 0: all fans auto, cool, quiet
+        f1rpm=$(( 800  + tick * 20 ))
+        f2rpm=$(( 750  + tick * 15 ))
+        f3rpm=$(( 600  + tick * 10 ))
+        f1mode=auto;  f2mode=auto;  f3mode=auto
+        f1level='';   f2level='';   f3level=''
+        f1ru='';      f2ru='';      f3ru=''
+        f1rd='';      f2rd='';      f3rd=''
+        cur_temp=$(( 38 + tick ))
+        pwr_mode=quiet
+    elif (( tick < 20 )); then
+        # phase 1: fan1 fixed, fan2 curve, fan3 auto, warming, balanced
+        local t=$(( tick - 10 ))
+        f1rpm=$(( 1800 + t * 80 ))
+        f2rpm=$(( 1200 + t * 60 ))
+        f3rpm=$(( 900  + t * 40 ))
+        f1mode=fixed; f2mode=curve; f3mode=auto
+        f1level=$(( 1 + t / 3 )); f2level=''; f3level=''
+        f1ru='';           f2ru="60,70,83,95,97"; f3ru=''
+        f1rd='';           f2rd="40,50,80,94,96"; f3rd=''
+        cur_temp=$(( 50 + t * 2 ))
+        pwr_mode=balanced
+    elif (( tick < 30 )); then
+        # phase 2: all fans curve, hot, performance
+        local t=$(( tick - 20 ))
+        f1rpm=$(( 3000 + t * 100 ))
+        f2rpm=$(( 2800 + t * 90  ))
+        f3rpm=$(( 2200 + t * 70  ))
+        f1mode=curve; f2mode=curve; f3mode=curve
+        f1level='';   f2level='';   f3level=''
+        f1ru="60,70,83,95,97"; f2ru="60,70,83,95,97"; f3ru="20,60,83,95,97"
+        f1rd="40,50,80,94,96"; f2rd="40,50,80,94,96"; f3rd="0,50,80,94,96"
+        cur_temp=$(( 72 + t ))
+        pwr_mode=performance
+    else
+        # phase 3: fan1 curve, fan2 auto, fan3 fixed, cooling, balanced
+        local t=$(( tick - 30 ))
+        f1rpm=$(( 3900 - t * 120 ))
+        f2rpm=$(( 3600 - t * 100 ))
+        f3rpm=$(( 2900 - t * 80  ))
+        f1mode=curve; f2mode=auto; f3mode=fixed
+        f1level='';   f2level='';  f3level=$(( 5 - t / 2 ))
+        f1ru="60,70,83,95,97"; f2ru=''; f3ru=''
+        f1rd="40,50,80,94,96"; f2rd=''; f3rd=''
+        cur_temp=$(( 80 - t * 2 ))
+        pwr_mode=balanced
+    fi
+
+    axb35_vars=(
+        "$f1rpm" "$f2rpm" "$f3rpm"
+        "$f1mode" "$f2mode" "$f3mode"
+        "$f1level" "$f2level" "$f3level"
+        "$f1ru" "$f2ru" "$f3ru"
+        "$f1rd" "$f2rd" "$f3rd"
+        "$cur_temp" "35" "82"
+        "$pwr_mode"
+    )
 }
 
 # command line arguments processing
-while getopts ":i:jrh-:" opt; do
+while getopts ":i:jrdh-:" opt; do
     case $opt in
         i)
             if [[ $(echo "$OPTARG > 0.2 && $OPTARG <= 10" | bc) -eq 1 ]]; then
@@ -135,6 +231,9 @@ EOF
         r)
             raw_mode=1
             ;;
+        d)
+            dev_mode=1
+            ;;
         h)
             usage
             ;;
@@ -159,6 +258,9 @@ EOF
             ;;
     esac
 done
+
+# module check runs after argument parsing so -d can suppress it
+[[ $dev_mode -eq 0 ]] && check_module
 
 # function to format the RPM value with color
 format_rpm() {
@@ -264,17 +366,17 @@ draw_interface() {
         
         row=$((row + 1))
         tput cup $row $col_offset
-        echo -n "  Level: "
+        [[ -n "${axb35_vars[$fan1level]}" ]] && echo -n "  Level: "
         positions[fan1level_pos]="$row $((col_offset + value_offset))"
         
         row=$((row + 1))
         tput cup $row $col_offset
-        echo -n "  Ramp Up Curve: "
+        [[ -n "${axb35_vars[$fan1ru]}" ]] && echo -n "  Ramp Up Curve: "
         positions[fan1ru_pos]="$row $((col_offset + value_offset))"
         
         row=$((row + 1))
         tput cup $row $col_offset
-        echo -n "  Ramp Down Curve: "
+        [[ -n "${axb35_vars[$fan1rd]}" ]] && echo -n "  Ramp Down Curve: "
         positions[fan1rd_pos]="$row $((col_offset + value_offset))"
         
         row=$((row + 2)) # skip one line
@@ -299,17 +401,17 @@ draw_interface() {
         
         row=$((row + 1))
         tput cup $row $col_offset
-        echo -n "  Level: "
+        [[ -n "${axb35_vars[$fan2level]}" ]] && echo -n "  Level: "
         positions[fan2level_pos]="$row $((col_offset + value_offset))"
         
         row=$((row + 1))
         tput cup $row $col_offset
-        echo -n "  Ramp Up Curve: "
+        [[ -n "${axb35_vars[$fan2ru]}" ]] && echo -n "  Ramp Up Curve: "
         positions[fan2ru_pos]="$row $((col_offset + value_offset))"
         
         row=$((row + 1))
         tput cup $row $col_offset
-        echo -n "  Ramp Down Curve: "
+        [[ -n "${axb35_vars[$fan2rd]}" ]] && echo -n "  Ramp Down Curve: "
         positions[fan2rd_pos]="$row $((col_offset + value_offset))"
         
         row=$((row + 2)) # skip one line
@@ -334,17 +436,17 @@ draw_interface() {
         
         row=$((row + 1))
         tput cup $row $col_offset
-        echo -n "  Level: "
+        [[ -n "${axb35_vars[$fan3level]}" ]] && echo -n "  Level: "
         positions[fan3level_pos]="$row $((col_offset + value_offset))"
         
         row=$((row + 1))
         tput cup $row $col_offset
-        echo -n "  Ramp Up Curve: "
+        [[ -n "${axb35_vars[$fan3ru]}" ]] && echo -n "  Ramp Up Curve: "
         positions[fan3ru_pos]="$row $((col_offset + value_offset))"
         
         row=$((row + 1))
         tput cup $row $col_offset
-        echo -n "  Ramp Down Curve: "
+        [[ -n "${axb35_vars[$fan3rd]}" ]] && echo -n "  Ramp Down Curve: "
         positions[fan3rd_pos]="$row $((col_offset + value_offset))"
         
         row=$((row + 2)) # skip one line
@@ -450,11 +552,20 @@ trap handle_resize SIGWINCH
 # hide cursor
 tput civis
 
+# previous state array for change detection in process_current_state
+declare -a axb35_vars_old
+
 # main loop
 handle_resize
 while true; do
-    get_current_state
+    if [[ $dev_mode -eq 1 ]]; then
+        get_dev_state
+    else
+        get_current_state
+    fi
     [[ $raw_mode -eq 0 ]] && process_current_state
+    [[ $needs_redraw -eq 1 ]] && draw_interface
+
     draw_values
     sleep $axb35_delay
 done
