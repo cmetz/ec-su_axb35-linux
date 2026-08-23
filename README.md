@@ -19,6 +19,18 @@ $ make
 $ sudo make install
 $ sudo insmod ec_su_axb35
 ```
+## Arch Linux (AUR)
+
+A PKGBUILD is provided for building the DKMS package from the git HEAD:
+
+```
+$ git clone https://github.com/cmetz/ec-su_axb35-linux.git
+$ cd ec-su_axb35-linux
+$ makepkg -si
+```
+
+This installs the `ec-su_axb35-linux-dkms` package, which auto-builds the modules on kernel updates.
+
 
 # Devices
 ```
