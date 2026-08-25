@@ -20,6 +20,13 @@ $ sudo make install
 $ sudo insmod ec_su_axb35
 ```
 
+# DKMS install (recommended)
+```
+$ sudo dkms add -m ec-su_axb35 -v 1.0
+$ sudo dkms build -m ec-su_axb35 -v 1.0
+$ sudo dkms install -m ec-su_axb35 -v 1.0
+```
+
 # Devices
 ```
 # Fan devices
@@ -35,12 +42,25 @@ $ sudo insmod ec_su_axb35
 # Temperature device
 /sys/class/ec_su_axb35/temp1/                   - CPU temperature in °C
 /sys/class/ec_su_axb35/temp1/temp          (RO) - current
-/sys/class/ec_su_axb35/temp1/min           (RO) - min temp measured since dirver load
-/sys/class/ec_su_axb35/temp1/max           (RO) - amx temp measured since driver load
+/sys/class/ec_su_axb35/temp1/min           (RO) - min temp measured since driver load
+/sys/class/ec_su_axb35/temp1/max           (RO) - max temp measured since driver load
 
 # APU device
 /sys/class/ec_su_axb35/apu/power_mode      (RW) - [quiet, balanced, performance]
 ```
+
+# Input device
+The front power-mode button is exposed as an input device:
+```
+$ cat /proc/bus/input/devices
+I: Bus=0019 Vendor=0001 Product=0001 Version=0100
+N: Name="ec_su_axb35 power mode button"
+B: EV=12
+B: KEY=1000000 0 0
+```
+Pressing the button emits a `KEY_POWER` event. Bind it in your DE to cycle
+power modes, or let the D-Bus service (`com.evox2.powermode`) handle it via
+sysfs polling.
 
 # Python GUI app (needs root to write to /sys/class/ec_su_axb35/*)
 to test:

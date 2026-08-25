@@ -5,6 +5,7 @@
 #include <linux/device.h>
 #include <linux/fs.h>
 #include <linux/init.h>
+#include <linux/input.h>
 #include <linux/io.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
@@ -43,7 +44,23 @@ struct ec_apu {
     struct device *dev;
 };
 
-static struct class *ec_class;
+struct ec_button {
+    const char    *name;
+    u8             reg;
+    u8             last_val;
+    struct input_dev *input;
+};
+
+/* Register a power-mode button input device that emits KEY_POWER on change.
+ * Default off: the D-Bus service (com.evox2.powermode) already polls the
+ * power-mode sysfs attribute and updates the desktop, so the input event is
+ * redundant. Worse, KEY_POWER is bound to the sleep/shutdown power menu by
+ * most desktops, so leaving it on makes every button press open that menu.
+ * Enable with "modprobe ec_su_axb35 input_button=1" if you want the event. */
+static bool input_button = false;
+module_param(input_button, bool, 0444);
+MODULE_PARM_DESC(input_button,
+                 "register a KEY_POWER input device on power-mode change (default: no)");
 
 static struct ec_fan ec_fans[] = {
     { .name           = "fan1",
@@ -74,6 +91,12 @@ static struct ec_temp ec_temp = {
 static struct ec_apu ec_apu = {
     .name           = "apu",
     .power_mode_reg = 0x31,
+};
+
+static struct ec_button ec_power_button = {
+    .name     = "power_mode_btn",
+    .reg      = 0x31,
+    .last_val = 0xFF,
 };
 
 static ssize_t fan_rpm_show(struct device *dev, struct device_attribute *attr,
@@ -490,6 +513,30 @@ static ssize_t apu_power_mode_store(struct device           *dev,
 static struct device_attribute dev_attr_apu_power_mode =
     __ATTR(power_mode, 0644, apu_power_mode_show, apu_power_mode_store);
 
+/* Only runs when the input_button module param is enabled. The power-mode
+ * register changes for reasons other than a physical button press (e.g. a
+ * userspace write to the power_mode sysfs attribute), so this is gated on the
+ * opt-in param and only emits/logs when the input device is actually present. */
+static void poll_power_button(void)
+{
+    u8 val;
+
+    if (!input_button || !ec_power_button.input)
+        return;
+
+    if (ec_read(ec_power_button.reg, &val) != 0)
+        return;
+
+    if (val != ec_power_button.last_val) {
+        ec_power_button.last_val = val;
+        input_report_key(ec_power_button.input, KEY_POWER, 1);
+        input_sync(ec_power_button.input);
+        input_report_key(ec_power_button.input, KEY_POWER, 0);
+        input_sync(ec_power_button.input);
+        pr_info("ec_su_axb35: power mode changed (mode=%u)\n", val);
+    }
+}
+
 static struct delayed_work ec_update_work;
 
 static void ec_update_worker(struct work_struct *work)
@@ -518,6 +565,9 @@ static void ec_update_worker(struct work_struct *work)
                 write_fan_level(fan, level - 1);
         }
     }
+
+    // Poll the power mode button
+    poll_power_button();
 
     // Requeue the work
     schedule_delayed_work(&ec_update_work,
@@ -585,6 +635,24 @@ static int __init ec_su_axb35_init(void)
         device_create_file(ec_apu.dev, &dev_attr_apu_power_mode);
     }
 
+    ec_power_button.input = NULL;
+    if (input_button) {
+        ec_power_button.input = input_allocate_device();
+        if (ec_power_button.input) {
+            ec_power_button.input->name = "ec_su_axb35 power mode button";
+            ec_power_button.input->id.bustype = BUS_HOST;
+            ec_power_button.input->id.vendor = 0x0001;
+            ec_power_button.input->id.product = 0x0001;
+            ec_power_button.input->id.version = 0x0100;
+            set_bit(EV_KEY, ec_power_button.input->evbit);
+            set_bit(KEY_POWER, ec_power_button.input->keybit);
+            if (input_register_device(ec_power_button.input) < 0) {
+                input_free_device(ec_power_button.input);
+                ec_power_button.input = NULL;
+            }
+        }
+    }
+
     INIT_DELAYED_WORK(&ec_update_work, ec_update_worker);
     schedule_delayed_work(&ec_update_work, msecs_to_jiffies(1000));
 
@@ -646,6 +714,13 @@ static void __exit ec_su_axb35_exit(void)
     }
 
     cancel_delayed_work_sync(&ec_update_work);
+
+    if (ec_power_button.input) {
+        /* input_unregister_device() drops the last reference and frees the
+         * device; calling input_free_device() too would double-free it. */
+        input_unregister_device(ec_power_button.input);
+        ec_power_button.input = NULL;
+    }
 
     class_destroy(ec_class);
     unregister_chrdev_region(ec_su_axb35_dev, ARRAY_SIZE(ec_fans) + 2);
