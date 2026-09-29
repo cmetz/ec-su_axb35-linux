@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # 02_install_ec_axb35_dkms.sh
-# Installs the ec_su_axb35 kernel module via DKMS with MOK signing.
+# Installs the ec_su_axb35 kernel module via DKMS.
 # Must be run from the contrib/ubuntu/ directory inside the cloned ec-su_axb35-linux repo.
-# Requires 01_setup_dkms_mok.sh to have been run and MOK enrolled at boot.
+# With Secure Boot enabled, requires 01_setup_dkms_mok.sh to have been run and MOK enrolled at boot.
 # Tested under Ubuntu 26.04
 
 set -euo pipefail
@@ -27,27 +27,28 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && cd .. && pwd)"
 
 # Sanity check we're in the right repo
 [[ -f "${REPO_ROOT}/Makefile" && -f "${REPO_ROOT}/Kbuild" ]] \
-    || error "Could not find Makefile/Kbuild at ${REPO_ROOT}. Is this script in the repo's scripts/ dir?"
+    || error "Could not find Makefile/Kbuild at ${REPO_ROOT}. Is this script in the repo's contrib/ubuntu/ dir?"
 
 MODULE_NAME="ec_su_axb35"
 MODULE_VERSION="1.0"
 DKMS_SRC="/usr/src/${MODULE_NAME}-${MODULE_VERSION}"
 
-# Verify MOK keys exist
-[[ -f "$MOK_KEY" && -f "$MOK_CERT" ]] \
-    || error "MOK keys not found at ${MOK_KEY} / ${MOK_CERT}. Run 01_setup_dkms_mok.sh first."
+# DKMS signs the module by itself (on Ubuntu with the MOK key below, created if missing).
+# The key only has to be enrolled when Secure Boot is enabled.
+if [[ "$(mokutil --sb-state 2>/dev/null)" == *"SecureBoot enabled"* ]]; then
+    [[ -f "$MOK_KEY" && -f "$MOK_CERT" ]] \
+        || error "Secure Boot is enabled but MOK keys were not found at ${MOK_KEY} / ${MOK_CERT}. Run 01_setup_dkms_mok.sh first."
 
-# Verify MOK is enrolled
-if mokutil --sb-state 2>/dev/null | grep -q "SecureBoot enabled"; then
-    mokutil --list-enrolled 2>/dev/null | grep "Secure Boot Module Signature key"
-      if !mokutil --test-key "$MOK_CERT" 2> /dev/null | grep -q "is already enrolled"; then
+    if [[ "$(mokutil --test-key "$MOK_CERT" 2>/dev/null)" == *"is already enrolled"* ]]; then
+        info "MOK key confirmed enrolled."
+    else
         warn "MOK key doesn't appear to be enrolled yet."
         warn "Did you complete the MOK enrollment at the boot screen?"
         read -rp "Continue anyway? [y/N] " confirm
         [[ "$confirm" =~ ^[Yy]$ ]] || exit 0
-    else
-        info "MOK key confirmed enrolled."
     fi
+else
+    info "Secure Boot is disabled, no MOK enrollment needed."
 fi
 
 # Install build deps
@@ -61,19 +62,23 @@ if dkms status "${MODULE_NAME}" 2>/dev/null | grep -q "${MODULE_NAME}"; then
 fi
 [[ -d "$DKMS_SRC" ]] && rm -rf "$DKMS_SRC"
 
-# Copy repo root into DKMS source tree
-info "Copying repo source to ${DKMS_SRC}..."
-cp -r "${REPO_ROOT}" "${DKMS_SRC}"
+# Copy only the module sources into the DKMS source tree (no .git, build artefacts or contrib/)
+info "Copying module source to ${DKMS_SRC}..."
+mkdir -p "${DKMS_SRC}/src"
+cp "${REPO_ROOT}/Kbuild" "${REPO_ROOT}/Makefile" "${DKMS_SRC}/"
+cp "${REPO_ROOT}"/src/*.[ch] "${DKMS_SRC}/src/"
 
 # Write dkms.conf into the DKMS source tree
+# MAKE[0] (same as DKMS's default) makes explicit that the build must target DKMS's kernel,
+# not the running one the repo Makefile defaults to.
 info "Writing dkms.conf..."
 cat > "${DKMS_SRC}/dkms.conf" << EOF
 PACKAGE_NAME="${MODULE_NAME}"
 PACKAGE_VERSION="${MODULE_VERSION}"
 BUILT_MODULE_NAME[0]="${MODULE_NAME}"
 DEST_MODULE_LOCATION[0]="/updates"
+MAKE[0]="make -C \${kernel_source_dir} M=\${dkms_tree}/\${PACKAGE_NAME}/\${PACKAGE_VERSION}/build modules"
 AUTOINSTALL="yes"
-POST_BUILD="sign-file sha256 ${MOK_KEY} ${MOK_CERT} \${dkms_tree}/\${PACKAGE_NAME}/\${PACKAGE_VERSION}/\${kernelver}/\${arch}/module/\${BUILT_MODULE_NAME[0]}.ko"
 EOF
 
 # DKMS add / build / install

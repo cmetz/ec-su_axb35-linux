@@ -2,6 +2,7 @@
 # 01_setup_dkms_mok.sh
 # Sets up DKMS and enrolls a MOK key for secure boot module signing.
 # Run this first, then reboot and complete MOK enrollment before running script 2.
+# Not needed when Secure Boot is disabled: run script 2 directly.
 # Tested under Ubuntu 26.04
 
 set -euo pipefail
@@ -22,7 +23,8 @@ MOK_CERT="/var/lib/shim-signed/mok/MOK.der"
 
 # Check secure boot state
 if ! mokutil --sb-state 2>/dev/null | grep -q "SecureBoot enabled"; then
-    warn "Secure boot does not appear to be enabled."
+    warn "Secure boot does not appear to be enabled, so no MOK enrollment is needed."
+    warn "You can run 02_install_ec_axb35_dkms.sh directly."
     read -rp "Continue anyway? [y/N] " confirm
     [[ "$confirm" =~ ^[Yy]$ ]] || exit 0
 fi
@@ -38,6 +40,12 @@ else
     info "Generating DKMS MOK key pair..."
     dkms generate_mok
     info "MOK key pair created at ${MOK_KEY} and ${MOK_CERT}"
+fi
+
+if [[ "$(mokutil --test-key "$MOK_CERT" 2>/dev/null)" == *"is already enrolled"* ]]; then
+    info "MOK key is already enrolled, no reboot needed."
+    info "Run: sudo bash contrib/ubuntu/02_install_ec_axb35_dkms.sh"
+    exit 0
 fi
 
 # Enroll the key
