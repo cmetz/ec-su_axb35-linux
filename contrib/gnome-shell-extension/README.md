@@ -18,8 +18,10 @@ on this board, power-profiles-daemon only drives the `amd_pstate` EPP hint and
 never touches the embedded controller.
 
 ### Installation & Usage
-1. Make sure the module is loaded (`cat /sys/class/ec_su_axb35/apu/power_mode`),
-   and load it at boot with
+1. Install the driver with DKMS (see `contrib/ubuntu/`) rather than a plain
+   `sudo make install`, which builds it for the running kernel only and leaves
+   it behind at the next kernel update. Make sure the module is loaded
+   (`cat /sys/class/ec_su_axb35/apu/power_mode`), and load it at boot with
    `echo ec_su_axb35 | sudo tee /etc/modules-load.d/ec_su_axb35.conf`.
 2. Copy the extension:
    `cp -r axb35-pmode@ec-su_axb35-linux ~/.local/share/gnome-shell/extensions/`
@@ -49,6 +51,20 @@ The EC stores an ordinal (`0x00`=balanced, `0x01`=performance, `0x02`=quiet),
 not a wattage. The 55 / 85 / 120 W figures are those of the GMKtec EVO-X2 and
 are **not read from the hardware**. If your vendor ships different presets,
 edit `MODES` at the top of `extension.js`.
+
+### Troubleshooting
+When `/sys/class/ec_su_axb35/apu/power_mode` is missing the top bar shows `?`
+and the drop-down says why:
+
+- *ec_su_axb35 not installed for kernel X*: the running kernel has no build of
+  the module, typically right after a kernel update when the driver was
+  installed with `make install`. Rebuild it
+  (`make && sudo make install && sudo modprobe ec_su_axb35`), or move to DKMS
+  so it happens by itself.
+- *ec_su_axb35 module not loaded*: the module is installed but not loaded,
+  `sudo modprobe ec_su_axb35`.
+
+The indicator picks the module up within 3 seconds, no need to log out.
 
 ### Notes
 The driver does not call `sysfs_notify()`, so the extension polls

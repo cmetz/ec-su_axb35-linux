@@ -16,6 +16,11 @@ import {Extension} from 'resource:///org/gnome/shell/extensions/extension.js';
 const PMODE_PATH = '/sys/class/ec_su_axb35/apu/power_mode';
 const PMODE_POLL_SECONDS = 3;
 
+// Only read once the node above is missing, to tell a module that is merely
+// not loaded from one the running kernel has no build of — the usual state
+// after a kernel update when the driver was installed with `make install`.
+const OSRELEASE_PATH = '/proc/sys/kernel/osrelease';
+
 // Live APU package power, published by amdgpu in microwatts. A plain sysfs
 // read with no EC involved, so it can be polled a little faster. The hwmon
 // number is not stable across boots and is resolved at runtime.
@@ -45,6 +50,7 @@ class PModeIndicator extends PanelMenu.Button {
         this._power = null;
         this._modeCancellable = null;
         this._powerCancellable = null;
+        this._depCancellable = null;
         this._modeTimeoutId = null;
         this._powerTimeoutId = null;
 
@@ -226,11 +232,11 @@ class PModeIndicator extends PanelMenu.Button {
         const info = MODES[mode];
         if (info) {
             this._statusItem.visible = false;
+        } else if (this._modeFile.query_exists(null)) {
+            this._setStatus('Unexpected EC value');
         } else {
-            this._statusItem.label.text = this._modeFile.query_exists(null)
-                ? 'Unexpected EC value'
-                : 'ec_su_axb35 module not loaded';
-            this._statusItem.visible = true;
+            this._setStatus('ec_su_axb35 module not loaded');
+            this._checkModuleInstalled();
         }
 
         for (const [key, item] of this._items) {
@@ -243,6 +249,46 @@ class PModeIndicator extends PanelMenu.Button {
         }
     }
 
+    _setStatus(text) {
+        this._statusItem.label.text = text;
+        this._statusItem.visible = true;
+    }
+
+    // modules.dep lists every module modprobe can find for a given kernel.
+    // Read only on the transition into the error state, so about a megabyte
+    // once rather than on every poll.
+    _checkModuleInstalled() {
+        if (this._depCancellable)
+            return;
+        let release;
+        try {
+            const [, contents] = Gio.File.new_for_path(OSRELEASE_PATH)
+                .load_contents(null);
+            release = new TextDecoder().decode(contents).trim();
+        } catch {
+            return;
+        }
+
+        const depFile = Gio.File.new_for_path(`/lib/modules/${release}/modules.dep`);
+        this._depCancellable = new Gio.Cancellable();
+        depFile.load_contents_async(this._depCancellable, (file, res) => {
+            this._depCancellable = null;
+            let deps;
+            try {
+                const [, contents] = file.load_contents_finish(res);
+                deps = new TextDecoder().decode(contents);
+            } catch {
+                return;
+            }
+            // Matches a plain `make install` (updates/ec_su_axb35.ko) as well
+            // as DKMS's compressed updates/dkms/ec_su_axb35.ko.zst. The node
+            // may have appeared while the file was being read.
+            if (/(^|\/)ec_su_axb35\.ko/m.test(deps) || this._mode !== null)
+                return;
+            this._setStatus(`ec_su_axb35 not installed for kernel ${release}`);
+        });
+    }
+
     destroy() {
         for (const id of ['_modeTimeoutId', '_powerTimeoutId']) {
             if (this[id]) {
@@ -252,8 +298,10 @@ class PModeIndicator extends PanelMenu.Button {
         }
         this._modeCancellable?.cancel();
         this._powerCancellable?.cancel();
+        this._depCancellable?.cancel();
         this._modeCancellable = null;
         this._powerCancellable = null;
+        this._depCancellable = null;
         if (this._settingsId) {
             this._settings.disconnect(this._settingsId);
             this._settingsId = null;
