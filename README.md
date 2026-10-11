@@ -17,7 +17,17 @@ For more details, please have a look at the desevens wiki: https://strixhalo-hom
 ```
 $ make
 $ sudo make install
-$ sudo insmod ec_su_axb35
+$ sudo modprobe ec_su_axb35
+```
+
+`make install` copies the module to `/lib/modules/$(uname -r)/updates/` and runs `depmod`,
+so load it with `modprobe` (which resolves the module by name). `insmod` only accepts a path
+to a `.ko` file, so `sudo insmod ec_su_axb35` fails with "No such file or directory";
+`sudo insmod ec_su_axb35.ko` would work from the build directory but is not recommended.
+
+To load the driver automatically at boot:
+```
+$ echo ec_su_axb35 | sudo tee /etc/modules-load.d/ec_su_axb35.conf
 ```
 
 # Devices
@@ -44,8 +54,9 @@ $ sudo insmod ec_su_axb35
 
 # Python GUI app (needs root to write to /sys/class/ec_su_axb35/*)
 to test:
-python ./ec-su_axb35-linux-gui.py
+python ./python-gui/ec-su_axb35-linux-gui.py
 
 to install:
-sudo install -m 755 ec-su_axb35-linux-gui.py /usr/local/bin/ec-su_axb35-linux-gui
-cp ec-fan-control.desktop ~/.local/share/applications/
+sudo install -m 755 python-gui/ec-su_axb35-linux-gui.py /usr/local/bin/ec-su_axb35-linux-gui
+mkdir -p ~/.local/share/applications/
+cp python-gui/ec-fan-control.desktop ~/.local/share/applications/
