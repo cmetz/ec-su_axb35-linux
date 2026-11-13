@@ -23,6 +23,7 @@ struct ec_fan {
     u8             speed_reg_high;
     u8             speed_reg_low;
     u8             mode_reg;
+    u8             duty_reg; /* duty override: 0x80 | percent; 0x00 = the firmware's own control; 0 = none */
     u8             rampup_curve[6];
     u8             rampdown_curve[6];
     enum fan_mode  mode;
@@ -49,12 +50,14 @@ static struct ec_fan ec_fans[] = {
     { .name           = "fan1",
       .speed_reg_high = 0x35,
       .speed_reg_low  = 0x36,
+      .duty_reg       = 0x33,
       .mode_reg       = 0x21,
       .rampup_curve   = { 0, 60, 70, 83, 95, 97 },
       .rampdown_curve = { 0, 40, 50, 80, 94, 96 } },
     { .name           = "fan2",
       .speed_reg_high = 0x37,
       .speed_reg_low  = 0x38,
+      .duty_reg       = 0x34,
       .mode_reg       = 0x23,
       .rampup_curve   = { 0, 60, 70, 83, 95, 97 },
       .rampdown_curve = { 0, 40, 50, 80, 94, 96 } },
@@ -75,6 +78,42 @@ static struct ec_apu ec_apu = {
     .name           = "apu",
     .power_mode_reg = 0x31,
 };
+
+/*
+ * The duty override of fan1 and fan2. On some EC firmware (seen with BIOS 3.11) writes to the mode and level registers
+ * no longer move the fans, while this override does: 0x80 | percent takes the fan over, 0x00 hands it back to the
+ * firmware. Found in the board's DSDT by nathanmarlor/strix-halo-fan-control.
+ */
+static ssize_t fan_duty_show(struct device *dev, struct device_attribute *attr, char *buf)
+{
+    struct ec_fan *fan = dev_get_drvdata(dev);
+    u8             val;
+
+    if (ec_read(fan->duty_reg, &val))
+        return -EIO;
+    if (!(val & 0x80))
+        return sprintf(buf, "auto\n");
+    return sprintf(buf, "%u\n", val & 0x7f);
+}
+
+static ssize_t fan_duty_store(struct device *dev, struct device_attribute *attr, const char *buf, size_t count)
+{
+    struct ec_fan *fan = dev_get_drvdata(dev);
+    u8             pct;
+
+    if (sysfs_streq(buf, "auto")) {
+        if (ec_write(fan->duty_reg, 0x00))
+            return -EIO;
+        return count;
+    }
+    if (kstrtou8(buf, 10, &pct) || pct > 100)
+        return -EINVAL;
+    if (ec_write(fan->duty_reg, 0x80 | pct))
+        return -EIO;
+    return count;
+}
+
+static struct device_attribute dev_attr_fan_duty = __ATTR(duty, 0644, fan_duty_show, fan_duty_store);
 
 static ssize_t fan_rpm_show(struct device *dev, struct device_attribute *attr,
                             char *buf)
@@ -564,6 +603,8 @@ static int __init ec_su_axb35_init(void)
         device_create_file(fan->dev, &dev_attr_fan_level);
         device_create_file(fan->dev, &dev_attr_fan_rampup_curve);
         device_create_file(fan->dev, &dev_attr_fan_rampdown_curve);
+        if (fan->duty_reg)
+            device_create_file(fan->dev, &dev_attr_fan_duty);
         update_fan_mode(fan);
     }
 
@@ -602,6 +643,8 @@ static void __exit ec_su_axb35_exit(void)
         u8 val;
 
         fan->mode = AUTO;
+        if (fan->duty_reg)
+            ec_write(fan->duty_reg, 0x00); /* hand a duty override back to the firmware */
 
         switch (fan->mode_reg) {
         case 0x21: // Fan 1
@@ -627,6 +670,8 @@ static void __exit ec_su_axb35_exit(void)
             device_remove_file(ec_fans[i].dev, &dev_attr_fan_level);
             device_remove_file(ec_fans[i].dev, &dev_attr_fan_rampup_curve);
             device_remove_file(ec_fans[i].dev, &dev_attr_fan_rampdown_curve);
+            if (ec_fans[i].duty_reg)
+                device_remove_file(ec_fans[i].dev, &dev_attr_fan_duty);
             device_destroy(ec_class, MKDEV(MAJOR(ec_su_axb35_dev), i));
         }
     }
