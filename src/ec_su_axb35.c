@@ -385,17 +385,28 @@ static ssize_t fan_curve_show(u8 *curve, char *buf)
 
 static ssize_t fan_curve_store(u8 *curve, const char *buf, size_t count)
 {
-    char *str = kstrndup(buf, count, GFP_KERNEL);
+    char *alloc;
+    char *str;
     char *token;
     int   values[5];
     int   i   = 0;
     int   ret = 0;
 
-    if (!str)
+    alloc = kstrndup(buf, count, GFP_KERNEL);
+    if (!alloc)
         return -ENOMEM;
 
-    token = strsep(&str, ",");
-    while (token && i < 5) {
+    /*
+     * strsep() advances only this cursor.  kfree() must receive the original
+     * allocation pointer, never the advanced cursor or an interior pointer.
+     */
+    str = alloc;
+    while (i < 5) {
+        token = strsep(&str, ",");
+        if (!token || !*token) {
+            ret = -EINVAL;
+            break;
+        }
         if (kstrtoint(token, 10, &values[i]) < 0) {
             ret = -EINVAL;
             break;
@@ -405,19 +416,23 @@ static ssize_t fan_curve_store(u8 *curve, const char *buf, size_t count)
             break;
         }
         i++;
-        token = strsep(&str, ",");
     }
 
-    if (i != 5)
+    /*
+     * Exactly five fields: anything left after the fifth value is an extra
+     * field.  This also rejects a trailing comma, because strsep() leaves the
+     * cursor pointing at the empty sixth field instead of setting it to NULL.
+     */
+    if (!ret && str)
         ret = -EINVAL;
 
-    if (ret == 0) {
+    if (!ret) {
         for (i = 0; i < 5; i++) {
             curve[i + 1] = values[i];
         }
     }
 
-    kfree(str);
+    kfree(alloc);
     return ret ? ret : count;
 }
 
@@ -462,8 +477,12 @@ static ssize_t temp_current_show(struct device           *dev,
 {
     struct ec_temp *temp = dev_get_drvdata(dev);
     u8              val;
-    // TODO: handle error
-    ec_read(temp->reg, &val);
+    int             ret;
+
+    ret = ec_read(temp->reg, &val);
+    if (ret)
+        return ret;
+
     return sprintf(buf, "%u\n", val);
 }
 
